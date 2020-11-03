@@ -130,3 +130,6 @@ dmypy.json
 
 # tf stuff
 *.tfrecords
+
+# model data
+data/
