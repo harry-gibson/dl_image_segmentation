@@ -132,4 +132,5 @@ dmypy.json
 *.tfrecords
 
 # model data
-data/
+data/models/
+data/tfrecords/
