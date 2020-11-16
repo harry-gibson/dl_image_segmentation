@@ -202,7 +202,7 @@ def create_label_array(ctx, label_data, attrib_to_burn=None):
     return arr
 
 
-def create_chips_for_tile(job_details: TileJobConfig) -> Tuple(str,str):
+def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     """Creates image chips (geotiff training samples) for the specified  TileJobConfig.
     The image and label data files will be placed into /images and /labels subfolders below 
     the specified output folder location, and their name will be the DLTile's key with ':' 
