@@ -149,13 +149,14 @@ class TileJobConfig:
     """Simple data class to hold the necessary info for creating one training sample.
     Primary purpose is to provide a hashable means for passing all the data needed to extract 
     one sample, so it can be easily pickled and used by joblib etc"""
-    def __init__(self, dltile, out_folder_base, dl_product, ref_date, labels_data, label_attr=None):
+    def __init__(self, dltile, out_folder_base, dl_product, ref_date, labels_data, label_attr=None, bands="red green blue"):
         self.DLTILE = dltile
         self.OUTFOLDER = out_folder_base
         self.PRODUCT=dl_product
         self.TARGETDATE=ref_date
         self.LABEL_DS=labels_data
         self.LABEL_BURN_ATTR=label_attr
+        self.BANDS=bands
 
 
 def get_scene_date_diff_mapper(reference_date):
@@ -177,7 +178,7 @@ def create_img_array(ctx, product, reference_date, bands='red green blue'):
     scenes, newctx = dl.scenes.search(ctx, products=product)
     date_diff_mapper = get_scene_date_diff_mapper(reference_date)
     sorted_scenes = scenes.sorted(date_diff_mapper, reverse=True)
-    arr = sorted_scenes.mosaic(bands='red green blue', ctx=ctx, bands_axis=-1)
+    arr = sorted_scenes.mosaic(bands=bands, ctx=ctx, bands_axis=-1)
     return arr
 
 
@@ -214,6 +215,7 @@ def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     target_date = job_details.TARGETDATE
     label_data = job_details.LABEL_DS
     label_attrib = job_details.LABEL_BURN_ATTR
+    bands = job_details.BANDS
     
     out_img_folder = os.path.join(out_base, 'images')
     out_lbl_folder = os.path.join(out_base, 'labels')
@@ -233,7 +235,7 @@ def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     
     # get the image data from descartes labs
     img_arr = create_img_array(ctx=dltile, product=product, 
-                               reference_date=target_date)
+                               reference_date=target_date, bands=bands)
     # rasterise the label data
     lbl_arr = create_label_array(ctx=dltile, label_data=label_data, 
                                  attrib_to_burn=label_attrib)
