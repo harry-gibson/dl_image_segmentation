@@ -1,0 +1,17 @@
+name: dl_tf
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3
+  - descarteslabs
+  - matplotlib
+  - jupyterlab
+  - tensorflow-gpu
+  - gdal
+  - geopandas
+  - folium
+  - descartes
+  - joblib
+prefix: C:\Users\harry\anaconda3\envs\dl_tf
+
