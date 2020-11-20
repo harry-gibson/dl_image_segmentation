@@ -6,67 +6,7 @@ import os
 from typing import Sequence
 
 ### Functions from Descartes "wellpads" sample utils.py
-def _int64_feature(value):
-    """Wrapper for inserting int64 features into Example proto."""
-    if isinstance(value, np.ndarray):
-        value = value.flatten().tolist()
-    elif not isinstance(value, list):
-        value = [value]
-    return tf.train.Feature(int64_list=tf.train.Int64List(value=value))
 
-
-def _float64_feature(value):
-    """Wrapper for inserting float64 features into Example proto."""
-    if isinstance(value, np.ndarray):
-        value = value.flatten().tolist()
-    elif not isinstance(value, list):
-        value = [value]
-    return tf.train.Feature(float_list=tf.train.FloatList(value=value))
-
-
-def _bytes_feature(value):
-    """Wrapper for inserting bytes features into Example proto."""
-    return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
-
-        
-def convert_to_example(img_data, target_data, img_shape, target_shape, dltile):
-    """ Converts image and target data into TFRecords example.
-    From the Descartes Labs wellpads sample.
-    
-    Parameters
-    ----------
-    img_data: ndarray
-        Image data
-    target_data: ndarray
-        Target data
-    img_shape: tuple
-        Shape of the image data (h, w, c)
-    target_shape: tuple
-        Shape of the target data (h, w, c)
-    dltile: str
-        DLTile key
-    
-    Returns
-    -------
-    Example: TFRecords example
-        TFRecords example
-    """
-    if len(target_shape) == 2:
-        target_shape = (*target_shape, 1)
-
-    features = {
-        "image/image_data": _float64_feature(img_data),
-        "image/height": _int64_feature(img_shape[0]),
-        "image/width": _int64_feature(img_shape[1]),
-        "image/channels": _int64_feature(img_shape[2]),
-        "target/target_data": _float64_feature(target_data),
-        "target/height": _int64_feature(target_shape[0]),
-        "target/width": _int64_feature(target_shape[1]),
-        "target/channels": _int64_feature(target_shape[2]),
-        "dltile": _bytes_feature(tf.compat.as_bytes(dltile)),
-    }
-
-    return tf.train.Example(features=tf.train.Features(feature=features))
 
 
 numpy_dtype_to_gdal = {
