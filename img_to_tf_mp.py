@@ -18,57 +18,70 @@ from rasterio.io import MemoryFile
 
 from tf_example_creation import convert_to_example
 
-
-def _process_image_and_lbl(img_path, lbl_path):
-    img_arr, shp, dlkey = _process_image(img_path)
-    lbl_arr, _, _ = _process_image(lbl_path)
-    return img_arr, lbl_arr, shp, dlkey
-
-
-def load_image_rasterio(img_path, parse_dltile_filename=True):
-
+       
+def load_image_rasterio(img_path, parse_dltile_filename=True, decode=True):
+    """Process a single image file, for any GDAL-compatible image type"""
     # we use rasterio to parse the actual image data into an array
     # so that we can handle multi bands, different filetypes, dtypes
     # But we still use tf api to handle the actual file reading as it is
     # so much faster.
-    with tf.gfile.FastGFile(img_path, 'rb') as f:
+    img_arr = None
+    with tf.io.gfile.GFile(img_path, 'rb') as f:
         image_data = f.read()
         with MemoryFile(image_data) as memfile:
             with memfile.open() as src:
-                img_arr = src.read()
+                if decode:
+                    img_arr = src.read()
                 gt_str = str(src.get_transform())
                 crs_str = str(src.read_crs())
+                height = src.height
+                width = src.width
+                bands = src.count
 
     #with rasterio.open(img_path) as src:
     #    img_arr = src.read() # reads all bands to 3d array bands,rows,cols
     #    gt_str = str(src.get_transform())
     #    crs_str = str(src.read_crs())
 
-    img_arr = reshape_as_image(img_arr) #  converts dim order to rows,cols,bands
+    
     if parse_dltile_filename:
         tile_key = '.'.join(os.path.basename(img_path).split(os.extsep)[:-1]).replace('#',':')
     else:
         if not (gt_str is None or crs_str is None):
-            tile_key = '|'.join((gt_str, crs_str))
+            tile_key = '|'.join((os.path.basename(img_path), 
+                                 gt_str, crs_str))
         else:
             tile_key = os.path.basename(img_path)
-    return img_arr, img_arr.shape, tile_key
+    if decode:
+        img_arr = reshape_as_image(img_arr) #  converts dim order to rows,cols,bands
+        # just in case we later extend to read a window/part of the dataset, put this trap 
+        # in to make sure we don't trip over returning the wrong shape
+        assert (height,width,bands)==img_arr.shape
+        return img_arr, height, width, bands, tile_key
+    else:
+        return image_data, height, width, bands, tile_key
 
 
 def _process_image_files_mp_worker(proc_index, ranges, 
                                    name, img_filenames, lbl_filenames, output_directory, 
                                    num_shards,
-                                   dltile_from_filename):
+                                   dltile_from_filename,
+                                  store_as_array):
     """Processes and saves part of a list of images as TFRecord in 1 process.
-  Args:
-    proc_index: integer, unique batch to run index is within [0, len(ranges)).
-    ranges: list of pairs of integers specifying ranges of each batch to
-      analyze in parallel.
-    name: string, unique identifier specifying the data set
-    filenames: list of strings; each string is a path to an image file
-    texts: list of strings; each string is human readable, e.g. 'dog'
-    labels: list of integer; each integer identifies the ground truth
-    num_shards: integer number of shards for this data set.
+    Args:
+      proc_index: integer, unique batch to run index is within [0, len(ranges)).
+      ranges: list of pairs of integers specifying ranges of each batches to
+        analyze in parallel.
+      name: string, unique identifier specifying the data set
+      img_filenames: list of strings; each string is a path to an image file
+      lbl_filenames: list of strings; each string is a path to a label image file
+      output_directory: folder to write the tfrecords to
+      num_shards: integer number of shards for this data set
+      dltile_from_filename: If this option is set, the filename will have any "#" converted 
+      to ":" and be used as the identifier. Otherwise the filename will be concatenated 
+      with the image GT and CRS strings for the identifier.
+      store_as_array: If False then the image data will be stored directly (as whatever format 
+      it was in originally), if True then it will be decoded and stored as UInt8 or Float64 array
     """
     # Each proc produces N shards where N = int(num_shards / num_threads).
     # For instance, if num_shards = 128, and the num_threads = 2, then the first
@@ -90,7 +103,7 @@ def _process_image_files_mp_worker(proc_index, ranges,
         output_file = os.path.join(output_directory, output_filename)
         if not os.path.exists(output_directory):
             os.makedirs(output_directory)
-        writer = tf.python_io.TFRecordWriter(output_file)
+        writer = tf.io.TFRecordWriter(output_file)
 
         shard_counter = 0
         files_in_shard = np.arange(shard_ranges[s], shard_ranges[s + 1], dtype=int)
@@ -99,19 +112,19 @@ def _process_image_files_mp_worker(proc_index, ranges,
             label = lbl_filenames[i]
             
             try:
-                image_buffer, image_shape, tile_key = load_image_rasterio(filename,
-                                                                          dltile_from_filename)
-                lbl_buffer, label_shape, _ = load_image_rasterio(label,
-                                                                 dltile_from_filename)
+                image_buffer, iheight, iwidth, ibands, itile_key = load_image_rasterio(
+                    filename, dltile_from_filename, store_as_array)
+                lbl_buffer, lheight, lwidth, lbands, ltile_key = load_image_rasterio(
+                    label, dltile_from_filename, store_as_array)
+                assert itile_key == ltile_key
             except Exception as e:
                 print(e)
                 print('SKIPPED: Unexpected eror while decoding %s.' % filename)
                 continue
             
             example = convert_to_example(image_buffer, lbl_buffer, 
-                                         image_shape[0], image_shape[1], image_shape[2], 
-                                         label_shape[0], label_shape[1],
-                                         tile_key)
+                                         iheight, iwidth, ibands, 
+                                         lheight, lwidth, itile_key)
             writer.write(example.SerializeToString())
             shard_counter += 1
             counter += 1
@@ -127,13 +140,14 @@ def _process_image_files_mp_worker(proc_index, ranges,
         sys.stdout.flush()
         shard_counter = 0
     print('%s [process %d]: Wrote %d images to %d shards.' %
-        (datetime.now(), proc_index, counter, num_files_in_proc))
+        (datetime.now(), proc_index, counter, num_shards_per_batch))
     sys.stdout.flush()
     
     
 def _process_image_files_mp(name, img_files, lbl_files, out_folder,
                             num_shards, num_proc,
-                            dltile_from_filename):
+                            dltile_from_filename,
+                           store_as_array):
     assert len(img_files) == len(lbl_files)
 
     # Break all images into batches with a [ranges[i][0], ranges[i][1]].
@@ -147,7 +161,8 @@ def _process_image_files_mp(name, img_files, lbl_files, out_folder,
         args=(proc_idx, ranges, 
               name, img_files, lbl_files, out_folder, 
               num_shards, 
-              dltile_from_filename)
+              dltile_from_filename,
+             store_as_array)
         proc_args.append(args)
     res = Parallel(n_jobs=num_proc)(delayed(_process_image_files_mp_worker)(*a) for a in proc_args)
     return res
@@ -184,8 +199,8 @@ def _find_image_files(data_dir, file_ext):
     # Construct the list of JPEG files and labels.
     img_file_path = '%s/images/*.%s' % (data_dir, file_ext)
     lbl_file_path = '%s/labels/*.%s' % (data_dir, file_ext)
-    filenames = tf.gfile.Glob(img_file_path)
-    labels = tf.gfile.Glob(lbl_file_path)
+    filenames = tf.io.gfile.glob(img_file_path)
+    labels = tf.io.gfile.glob(lbl_file_path)
 
     # Shuffle the ordering of all image files in order to guarantee
     # random ordering of the images with respect to label in the
@@ -205,16 +220,34 @@ def _find_image_files(data_dir, file_ext):
 def process_dataset_mp(name, directory, out_directory,
                        num_shards, num_proc=None,
                        dltile_from_filename=True,
-                       file_ext='tif'):
-    """Process a complete data set and save it as a TFRecord.
+                       file_ext='tif',
+                      store_as_array=True):
+    """Process a folder of images and label images and save it as TFRecords. Processes any 
+    GDAL-compatible image format. 
+    (See also Use process_dataset_threaded for a faster implementation compatible with RGB 
+    or single-band images only, in PNG or JPG format.)
     Args:
-    name: string, unique identifier specifying the data set.
-    directory: string, root path to the data set.
-    num_shards: integer number of shards for this data set.
+      name: string, unique identifier specifying the data set, used to name the output files.
+      directory: string, root path to the data set. Must have subfolders 'images' and 'labels'
+      out_directory: folder where the tfrecords will be saved
+      num_shards: integer number of shards (split tfrecords files) for this data set. Must be 
+      a multiple of num_proc.
+      num_proc: number of proc to use for parallel processing. Generally ok to use at least 1
+      per core.
+      dltile_from_filename: Defines how the georeferencing information should be stored in the record. 
+      
+      The TFRecord examples will have an "identifier" feature which will be needed to match the record back to the source image, and so recover the georeferencing information for the data if it's stored as arrays.
+      If this argument is True then the filename is assumed to be a DLTile key, with ':' replaced by '#', so the identifier will be set to the filename with '#' replaced ':' in the identifier. 
+      If this is False, then the identifier will be set to the '{IMG_FILENAME}|{IMG_GEOTRANSFORM}|{IMG_CRS}'.
+      file_ext: The extension of the image files to search for in the directory. (Labels and images 
+      must be in same format).
+      store_as_array: If False then binary encoded image data will be stored in the TFRecords, which in the case of a compressed image format will give smaller files. However the images will then need 
+      to be decoded in the training pipeline which may be slower. If True then the images will be decoded and the data arrays will be stored, either as UInt8 or Float64 types.
     """
     if not num_proc:
         num_proc = num_shards
     filenames, labels = _find_image_files(directory, file_ext)
     _process_image_files_mp(name, filenames, labels, out_directory,
                             num_shards, num_proc,
-                            dltile_from_filename)
+                            dltile_from_filename,
+                           store_as_array)

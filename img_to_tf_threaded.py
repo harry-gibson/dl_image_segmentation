@@ -17,39 +17,51 @@ class ImageCoder(object):
     """Helper class that provides TensorFlow image coding utilities."""
 
     def __init__(self):
+        pass
         # Create a single Session to run all image coding calls.
-        self._sess = tf.Session()
+        #self._sess = tf.Session()
 
         # Initializes function that converts PNG to JPEG data.
-        self._png_data = tf.placeholder(dtype=tf.string)
-        image = tf.image.decode_png(self._png_data, channels=3)
-        self._png_to_jpeg = tf.image.encode_jpeg(image, format='rgb', quality=100)
+        #self._png_data = tf.placeholder(dtype=tf.string)
+        #image = tf.image.decode_png(self._png_data, channels=3)
+        #self._png_to_jpeg = tf.image.encode_jpeg(image, format='rgb', quality=100)
 
         # Initializes function that decodes RGB JPEG data.
-        self._decode_jpeg_data = tf.placeholder(dtype=tf.string)
-        self._decode_jpeg = tf.image.decode_jpeg(self._decode_jpeg_data, channels=3)
+        #self._decode_jpeg_data = tf.placeholder(dtype=tf.string)
+        #self._decode_jpeg = tf.image.decode_jpeg(self._decode_jpeg_data, channels=3)
 
-        self._decode_png_data = tf.placeholder(dtype=tf.string)
-        self._decode_png = tf.image.decode_png(self._decode_png_data, channels=3)
+        #self._decode_png_data = tf.placeholder(dtype=tf.string)
+        #self._decode_png = tf.image.decode_png(self._decode_png_data, channels=3)
 
     def png_to_jpeg(self, image_data):
-        return self._sess.run(self._png_to_jpeg,
-                              feed_dict={self._png_data: image_data})
+        return tf.image.encode_jpeg(tf.image.decode_png(image_data), 
+                                    format='', quality=100).numpy()
+        # if we don't do the .numpy() then somehow the data get wrapped differently 
+        # in the decode_jpeg(encode_jpeg(decode_png))) nested call and it fails when 
+        # wrapping in convert-to-example. Confusing to troubleshoot because the 
+        # tensors are shown as arrays but we want them to be bytes and if we just do 
+        # decode_png or decode_jpg, then that's what they are, but if the calls are
+        # nested then tf2 does something different and it breaks
+        #return self._sess.run(self._png_to_jpeg,
+        #                      feed_dict={self._png_data: image_data})
 
     def decode_jpeg(self, image_data):
-        image = self._sess.run(self._decode_jpeg,
-                               feed_dict={self._decode_jpeg_data: image_data})
+        #image = self._sess.run(self._decode_jpeg,
+        #                       feed_dict={self._decode_jpeg_data: image_data})
+        image = tf.image.decode_jpeg(image_data)
         assert len(image.shape) == 3
         assert image.shape[2] <= 3
         return image
 
     def decode_png(self, image_data):
-        image = self._sess.run(self._decode_png,
-                               feed_dict={self._decode_png_data: image_data})
+        #image = self._sess.run(self._decode_png,
+        #                       feed_dict={self._decode_png_data: image_data})
+        image = tf.image.decode_png(image_data)
         assert(len(image.shape)==3)
-        assert(image.shape[2] <= 3)
+        assert(image.shape[2] <= 3) 
         return image
 
+    
 def _is_png(filename):
     """Determine if a file contains a PNG format image.
     Args:
@@ -59,25 +71,26 @@ def _is_png(filename):
     """
     return '.png' in filename
 
-def _process_image(filename, coder, parse_dltile_filename=True, png_to_jpg=False):
+
+def _process_image(filename, coder, parse_dltile_filename=True, png_to_jpg=False, decode=False):
     """Process a single image file.
     Args:
       filename: string, path to an image file e.g., '/path/to/example.png'.
       coder: instance of ImageCoder to provide TensorFlow image coding utils.
     Returns:
-      image_buffer: string, JPEG encoding of RGB image.
+      image_buffer: string, raw bytes (JPEG or PNG encoded) of provided filename 
+      if decode=False, or array of the decoded image if decode=True.
       height: integer, image height in pixels.
       width: integer, image width in pixels.
     """
     # Read the image file.
-    with tf.gfile.FastGFile(filename, 'rb') as f:
+    with tf.io.gfile.GFile(filename, 'rb') as f:
         image_data = f.read()
 
-    # Convert any PNG to JPEG's for consistency.
-    # Modified to not do this unless requested: why would we want to?
-    #  It makes the data smaller but that's because it throws info away. If we cared
-    # about smaller files we wouldn't be using tfrecords!! Would need to compare
-    # model results to see if it affects accuracy. Modified coder to read png instead
+    # Optionally convert any PNG to JPEG's for consistency.
+    # Don't do this unless requested: It makes the data smaller but that's 
+    # because it throws info away. Would need to compare
+    # model results to see if it affects accuracy. 
     if _is_png(filename):
         if not png_to_jpg:
             image = coder.decode_png(image_data)
@@ -85,23 +98,28 @@ def _process_image(filename, coder, parse_dltile_filename=True, png_to_jpg=False
             print('Converting PNG to JPEG for %s' % filename)
             image_data = coder.png_to_jpeg(image_data)
             image = coder.decode_jpeg(image_data)
-
     # Decode the RGB JPEG.
     else:
         image = coder.decode_jpeg(image_data)
 
+    # we always decode the image regardles of what's returned in order to check shape
     # Check that image converted to RGB
     assert len(image.shape) == 3
     height = image.shape[0]
     width = image.shape[1]
-    assert image.shape[2] <= 3
+    bands = image.shape[2]
+    
+    assert bands <= 3
     if parse_dltile_filename:
         tile_key = '.'.join(os.path.basename(filename).split(os.extsep)[:-1]).replace('#',':')
     else:
         tile_key = os.path.basename(filename)
 
-    return image_data, height, width, image.shape[2], tile_key
-
+    if decode:
+        return image, height, width, bands, tile_key
+    else:
+        return image_data, height, width, bands, tile_key
+    
 
 def _int64_feature(value):
     """Wrapper for inserting int64 features into Example proto."""
@@ -114,11 +132,12 @@ def _bytes_feature(value):
     """Wrapper for inserting bytes features into Example proto."""
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
 
+
 def _process_image_files_worker(coder, thread_index, ranges,
                                 name, filenames, labels, out_folder,
                                 num_shards,
                                 dltile_from_filename,
-                                png_to_jpg):
+                                png_to_jpg,  store_as_array=False):
     """Processes and saves list of images as TFRecord in 1 thread.
     Args:
       coder: instance of ImageCoder to provide TensorFlow image coding utils.
@@ -127,9 +146,16 @@ def _process_image_files_worker(coder, thread_index, ranges,
         analyze in parallel.
       name: string, unique identifier specifying the data set
       filenames: list of strings; each string is a path to an image file
-      texts: list of strings; each string is human readable, e.g. 'dog'
-      labels: list of integer; each integer identifies the ground truth
-      num_shards: integer number of shards for this data set.
+      labels: list of strings; each string is a path to a label image file
+      out_folder: folder to write the tfrecords to
+      num_shards: integer number of shards for this data set
+      dltile_from_filename: The image filename will be used as the "identifier" field 
+      in the tfrecord. If this option is set, the filename will have any "#" converted 
+      to ":" in this identifier.
+      png_to_jpg: If the images are stored as encoded image data and this is set then 
+      any PNGs will be transcoded to JPG for storage
+      store_as_array: If False then the image data will be stored directly (as PNG/JPG), 
+      if true then it will be decoded and stored as UInt8 array
     """
     # Each thread produces N shards where N = int(num_shards / num_threads).
     # For instance, if num_shards = 128, and the num_threads = 2, then the first
@@ -151,7 +177,7 @@ def _process_image_files_worker(coder, thread_index, ranges,
         output_file = os.path.join(out_folder, output_filename)
         if not os.path.exists(out_folder):
             os.makedirs(out_folder)
-        writer = tf.python_io.TFRecordWriter(output_file)
+        writer = tf.io.TFRecordWriter(output_file)
 
         shard_counter = 0
         files_in_shard = np.arange(shard_ranges[s], shard_ranges[s + 1], dtype=int)
@@ -160,10 +186,10 @@ def _process_image_files_worker(coder, thread_index, ranges,
             label = labels[i]
 
             try:
-                image_buffer, iheight, iwidth, ibands, idlkey = _process_image(filename, coder,
-                                                                               dltile_from_filename, png_to_jpg)
-                lbl_buffer, lheight, lwidth, lbands, ldlkey = _process_image(filename, coder,
-                                                                             dltile_from_filename, png_to_jpg)
+                image_buffer, iheight, iwidth, ibands, idlkey = _process_image(
+                    filename, coder, dltile_from_filename, png_to_jpg, store_as_array)
+                lbl_buffer, lheight, lwidth, lbands, ldlkey = _process_image(
+                    label, coder, dltile_from_filename, png_to_jpg, store_as_array)
                 assert idlkey == ldlkey
             except Exception as e:
                 print(e)
@@ -193,7 +219,7 @@ def _process_image_files_worker(coder, thread_index, ranges,
 
 def _process_image_files(name, img_files, lbl_files, out_folder,
                          num_shards, num_threads,
-                         dltile_from_filename, png_to_jpg):
+                         dltile_from_filename, png_to_jpg, store_as_array):
     """Process and save list of images as TFRecord of Example protos.
     Args:
       name: string, unique identifier specifying the data set
@@ -225,7 +251,7 @@ def _process_image_files(name, img_files, lbl_files, out_folder,
         args = (coder, thread_index, ranges,
                 name, img_files, lbl_files,  out_folder,
                 num_shards,
-                dltile_from_filename, png_to_jpg)
+                dltile_from_filename, png_to_jpg, store_as_array)
         t = threading.Thread(target=_process_image_files_worker, args=args)
         t.start()
         threads.append(t)
@@ -265,12 +291,16 @@ def _find_image_files(data_dir):
 
     # Leave label index 0 empty as a background class.
 
-    # Construct the list of PNG files and labels.
+    # Construct the list of PNG / JPG files and labels.
     img_file_path = '%s/images/*.png' % (data_dir)
     lbl_file_path = '%s/labels/*.png' % (data_dir)
-    filenames = tf.gfile.Glob(img_file_path)
-    labels = tf.gfile.Glob(lbl_file_path)
-
+    filenames = tf.io.gfile.glob(img_file_path)
+    labels = tf.io.gfile.glob(lbl_file_path)
+    fn_jpg = tf.io.gfile.glob(img_file_path.replace('.png', '.jpg'))
+    lb_jpg = tf.io.gfile.glob(lbl_file_path.replace('.png', '.jpg'))
+    filenames.extend(fn_jpg)
+    labels.extend(lb_jpg)
+    
     # Shuffle the ordering of all image files in order to guarantee
     # random ordering of the images with respect to label in the
     # saved TFRecord files. Make the randomization repeatable.
@@ -280,20 +310,30 @@ def _find_image_files(data_dir):
 
     filenames = [filenames[i] for i in shuffled_index]
     labels = [labels[i] for i in shuffled_index]
-
-    print('Found %d png files across %d labels inside %s.' %
-          (len(filenames), len(labels), data_dir))
+    
+    print('Found %d image files (of which %d JPGs) and %d label files inside %s.' %
+          (len(filenames), len(fn_jpg), len(labels), data_dir))
     return filenames, labels
 
 
 def process_dataset_multithreaded(name, directory, out_directory, num_shards, num_threads=None,
                                   dltile_from_filename=True,
-                                  convert_png_to_jpg=False):
-    """Process a complete data set and save it as a TFRecord.
+                                  convert_png_to_jpg=False,
+                                 store_as_array=False):
+    """Process a folder of images and label images and save it as TFRecords. Processes RGB or 
+    single-band images only, in PNG or JPG format. Use process_dataset_mp for other image types.
     Args:
-      name: string, unique identifier specifying the data set.
-      directory: string, root path to the data set.
-      num_shards: integer number of shards for this data set.
+      name: string, unique identifier specifying the data set, used to name the output files.
+      directory: string, root path to the data set. Must have subfolders 'images' and 'labels'
+      out_directory: folder where the tfrecords will be saved
+      num_shards: integer number of shards (split tfrecords files) for this data set. Must be 
+      a multiple of num_threads.
+      num_threads: number of threads to use for parallel processing
+      dltile_from_filename: The TFRecord examples will have an "identifier" feature which contains 
+      the source image filename. If this is True then '#' character in filename will be replaced 
+      by ':' in the identifier.
+      convert_png_to_jpg: Should PNG images be transcoded to JPG? Has no effect if store_as_array==True
+      store_as_array: If False then binary encoded PNG/JPG data will be stored in the TFRecords, giving smaller files. If True then the images will be decoded and the data arrays will be stored.
     """
     if not num_threads:
         num_threads=num_shards
@@ -301,4 +341,4 @@ def process_dataset_multithreaded(name, directory, out_directory, num_shards, nu
     filenames, labels = _find_image_files(directory)
     _process_image_files(name, filenames, labels, out_directory,
                          num_shards, num_threads,
-                         dltile_from_filename, convert_png_to_jpg)
+                         dltile_from_filename, convert_png_to_jpg, store_as_array)

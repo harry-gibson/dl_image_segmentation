@@ -89,13 +89,14 @@ class TileJobConfig:
     """Simple data class to hold the necessary info for creating one training sample.
     Primary purpose is to provide a hashable means for passing all the data needed to extract 
     one sample, so it can be easily pickled and used by joblib etc"""
-    def __init__(self, dltile, out_folder_base, dl_product, ref_date, labels_data, label_attr=None, bands="red green blue"):
+    def __init__(self, dltile, out_folder_base, dl_product, ref_date, labels_data, label_attr=None, label_lyr_num=0, bands="red green blue"):
         self.DLTILE = dltile
         self.OUTFOLDER = out_folder_base
         self.PRODUCT=dl_product
         self.TARGETDATE=ref_date
         self.LABEL_DS=labels_data
         self.LABEL_BURN_ATTR=label_attr
+        self.LABEL_LYR_NUM=label_lyr_num
         self.BANDS=bands
 
 
@@ -116,13 +117,16 @@ def create_img_array(ctx, product, reference_date, bands='red green blue'):
     returning the RGB image data (or other bands as specified) as a 3D array
     whose shape will be equal to the geocontext's shape + 2*padding, * n bands"""
     scenes, newctx = dl.scenes.search(ctx, products=product)
+    if len(scenes) == 0:
+        return None
     date_diff_mapper = get_scene_date_diff_mapper(reference_date)
     sorted_scenes = scenes.sorted(date_diff_mapper, reverse=True)
-    arr = sorted_scenes.mosaic(bands=bands, ctx=ctx, bands_axis=-1)
+    
+    arr = sorted_scenes.mosaic(bands=bands, ctx=ctx, bands_axis=-1, processing_level="surface")
     return arr
 
 
-def create_label_array(ctx, label_data, attrib_to_burn=None):
+def create_label_array(ctx, label_data, attrib_to_burn=None, layer_idx=0):
     """Rasterises the label data (path to OGR datasource) within the specified geocontext.
     If attrib_to_burn is not specified then all features will be rasterised as 1 and other 
     areas as 0. If attrib_to_burn is specified then it must contain values 0-255. Returns a
@@ -133,7 +137,7 @@ def create_label_array(ctx, label_data, attrib_to_burn=None):
     mem_ds.SetProjection(ctx.wkt)
     mem_ds.SetGeoTransform(ctx.geotrans)
     label_ogr_ds = ogr.Open(label_data)
-    label_lyr = label_ogr_ds.GetLayerByIndex(0)
+    label_lyr = label_ogr_ds.GetLayerByIndex(layer_idx)
     if attrib_to_burn:
         gdal.RasterizeLayer(mem_ds, [1], label_lyr, options=['ALL_TOUCHED=TRUE',f'ATTRIBUTE={attrib_to_burn}'])
     else:
@@ -154,6 +158,7 @@ def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     product = job_details.PRODUCT
     target_date = job_details.TARGETDATE
     label_data = job_details.LABEL_DS
+    label_lyr = job_details.LABEL_LYR_NUM
     label_attrib = job_details.LABEL_BURN_ATTR
     bands = job_details.BANDS
     
@@ -176,9 +181,12 @@ def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     # get the image data from descartes labs
     img_arr = create_img_array(ctx=dltile, product=product, 
                                reference_date=target_date, bands=bands)
+    if img_arr is None:
+        return None, None
     # rasterise the label data
     lbl_arr = create_label_array(ctx=dltile, label_data=label_data, 
-                                 attrib_to_burn=label_attrib)
+                                 attrib_to_burn=label_attrib,
+                                layer_idx=label_lyr)
     img_file = os.path.join(out_img_folder, fn) + ".tif"
     lbl_file = os.path.join(out_lbl_folder, fn) + ".tif"
     # save the data to compressed geotiffs
