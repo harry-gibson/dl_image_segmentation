@@ -1,17 +1,19 @@
-name: dl_tf
+name: dl_tf_gpu
 channels:
-  - conda-forge
+  - anaconda
+  #- conda-forge
   - defaults
 dependencies:
   - python=3
-  - descarteslabs
+  #- descarteslabs
   - matplotlib
   - jupyterlab
   - tensorflow-gpu
   - gdal
   - geopandas
-  - folium
+  #- folium
   - descartes
   - joblib
-prefix: C:\Users\harry\anaconda3\envs\dl_tf
+  - rasterio  
+prefix: C:\Users\harry\anaconda3\envs\dl_tf_gpu
 
