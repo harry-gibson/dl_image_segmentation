@@ -170,13 +170,15 @@ def _process_image_files_worker(coder, thread_index, ranges,
     num_files_in_thread = ranges[thread_index][1] - ranges[thread_index][0]
 
     counter = 0
+    lock = threading.Lock()
     for s in range(num_shards_per_batch):
         # Generate a sharded version of the file name, e.g. 'train-00002-of-00010'
         shard = thread_index * num_shards_per_batch + s
         output_filename = '%s-%.5d-of-%.5d' % (name, shard, num_shards)
         output_file = os.path.join(out_folder, output_filename)
-        if not os.path.exists(out_folder):
-            os.makedirs(out_folder)
+        with lock:
+            if not os.path.exists(out_folder):
+                os.makedirs(out_folder)
         writer = tf.io.TFRecordWriter(output_file)
 
         shard_counter = 0
