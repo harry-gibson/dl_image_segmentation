@@ -88,16 +88,36 @@ def gdal_dataset_from_geocontext(
 class TileJobConfig:
     """Simple data class to hold the necessary info for creating one training sample.
     Primary purpose is to provide a hashable means for passing all the data needed to extract 
-    one sample, so it can be easily pickled and used by joblib etc"""
-    def __init__(self, dltile, out_folder_base, dl_product, ref_date, labels_data, label_attr=None, label_lyr_num=0, bands="red green blue"):
+    one sample, so it can be easily pickled and used by joblib etc, including in particular 
+    the dltile object."""
+    def __init__(self, dltile, out_folder_base, dl_product, ref_date, labels_data,
+                 min_date = None, max_date = None, max_cloud_fraction=None,
+                 label_attr=None, label_lyr_num=0, bands="red green blue"):
         self.DLTILE = dltile
         self.OUTFOLDER = out_folder_base
         self.PRODUCT=dl_product
         self.TARGETDATE=ref_date
+        self.MIN_DATE=min_date
+        self.MAX_DATE=max_date
+        self.MAX_CLOUD_FRACTION=max_cloud_fraction
         self.LABEL_DS=labels_data
         self.LABEL_BURN_ATTR=label_attr
         self.LABEL_LYR_NUM=label_lyr_num
         self.BANDS=bands
+        
+    @classmethod
+    def from_run_config(cls, run_config, dltile, out_folder_base, ref_date, min_date, max_date, max_cloud_fraction):
+        """factory method to create a TileJobConfig where most of the parameters are replaced by a SampleCreationConfig 
+        object"""
+        lbl_data = run_config.LABEL_DATA()
+        return cls(dltile = dltile,
+                  out_folder_base=out_folder_base,
+                  dl_product=run_config.PRODUCT(),
+                  ref_date=ref_date, min_date=min_date, max_date=max_date, max_cloud_fraction=max_cloud_fraction,
+                  labels_data=lbl_data.OGR_DATASET,
+                  label_attr=lbl_data.BURN_ATTRIB,
+                  label_lyr_num=lbl_data.get_layer_index(),
+                  bands=run_config.BANDS())
 
 
 def get_scene_date_diff_mapper(reference_date):
@@ -111,19 +131,61 @@ def get_scene_date_diff_mapper(reference_date):
     return get_date_diff
 
 
-def create_img_array(ctx, product, reference_date, bands='red green blue'):
-    """Creates a mosaic of scenes matching the specified geocontext (dltile) 
-    prioritising the scenes closest in time to a specified reference date,
-    returning the RGB image data (or other bands as specified) as a 3D array
-    whose shape will be equal to the geocontext's shape + 2*padding, * n bands"""
-    scenes, newctx = dl.scenes.search(ctx, products=product)
+def create_img_array(ctx, product, reference_date, min_date=None, max_date=None, 
+                     bands='red green blue', max_cloud_fraction=None):
+    """Creates a mosaic of scenes matching the specified geocontext (dltile).
+    The mosaic will be created by selecting all scenes intersecting the tile; filtering 
+    to those after min_date and/or before max_date if specified; filtering to those with cloud 
+    fraction < max_cloud_fraction if specified; and then prioritising the scenes closest in 
+    time to the specified reference date.
+    
+    To create a mosaic of "latest available" data, just pass today's date or some arbitrary 
+    future date for `reference_date` and None for `min_date` and `max_date`.
+    
+    The RGB image data (or other bands as specified) are returned as a 3D array
+    whose shape will be equal to the geocontext's shape + 2*padding, * n bands. 
+    The data will be processed to "surface" (surface reflectance) where available. 
+    
+    For datasets that support it, the "Surface Reflectance" processed data will be returned 
+    (as opposed to e.g. TOA).
+    
+    If an error occurs then None will be returned. This generally suggests an error emanating 
+    from the Descartes Labs API. This can suggest that no data are available for the specified 
+    product / date range / cloud specification. However it can also occur randomly. So it's 
+    always worth re-trying a few times, and or checking any error tiles in the DL Viewer to see 
+    if data really are unavailable."""
+    
+    searchparams = {
+        "aoi" : ctx,
+        "products" : product
+    }
+    if  min_date is not None:
+        searchparams['start_datetime'] = min_date.isoformat()
+    if max_date is not None:
+        searchparams['end_datetime'] = max_date.isoformat()
+    if max_cloud_fraction is not None:
+        #searchparams['cloud_fraction'] = max_cloud_fraction
+        # or 
+        searchparams['query'] = (dl.properties.cloud_fraction < max_cloud_fraction)
+    #scenes, newctx = dl.scenes.search(ctx, products=product)
+    scenes, newctx = dl.scenes.search(**searchparams)
+    
     if len(scenes) == 0:
         return None
+    
+    # Sort the candidate scenes by the absolute difference between their date and the 
+    # reference date. Sort in reverse order so the closest in time is last in the iterable 
+    # SceneCollection. From the DL SceneCollection.mosaic() docs:
+    #     `Where multiple scenes overlap, only data from the scene that comes last in 
+    #     the SceneCollection is used.`
     date_diff_mapper = get_scene_date_diff_mapper(reference_date)
     sorted_scenes = scenes.sorted(date_diff_mapper, reverse=True)
     
-    arr = sorted_scenes.mosaic(bands=bands, ctx=ctx, bands_axis=-1, processing_level="surface")
-    return arr
+    try:
+        arr = sorted_scenes.mosaic(bands=bands, ctx=ctx, bands_axis=-1, processing_level="surface")
+        return arr
+    except:
+        return None
 
 
 def create_label_array(ctx, label_data, attrib_to_burn=None, layer_idx=0):
@@ -149,9 +211,15 @@ def create_label_array(ctx, label_data, attrib_to_burn=None, layer_idx=0):
 
 def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     """Creates image chips (geotiff training samples) for the specified  TileJobConfig.
+    
     The image and label data files will be placed into /images and /labels subfolders below 
     the specified output folder location, and their name will be the DLTile's key with ':' 
     replaced by '#'.
+    
+    Returns a 3-tuple of (job_details, path_to_image, path_to_label). If the request to the 
+    Descartes Labs API failed to generate an image, then returns (job_details, None, None). 
+    In this case, you should re-try several times before concluding that data are not 
+    available (or check in the DL Viewer), as the API is prone to transient failures.
     """
     dltile = job_details.DLTILE
     out_base = job_details.OUTFOLDER
@@ -161,6 +229,10 @@ def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     label_lyr = job_details.LABEL_LYR_NUM
     label_attrib = job_details.LABEL_BURN_ATTR
     bands = job_details.BANDS
+    
+    min_date = job_details.MIN_DATE
+    max_date = job_details.MAX_DATE
+    max_cloud_fraction = job_details.MAX_CLOUD_FRACTION
     
     out_img_folder = os.path.join(out_base, 'images')
     out_lbl_folder = os.path.join(out_base, 'labels')
@@ -180,9 +252,11 @@ def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     
     # get the image data from descartes labs
     img_arr = create_img_array(ctx=dltile, product=product, 
-                               reference_date=target_date, bands=bands)
+                               reference_date=target_date, min_date=min_date, max_date=max_date,
+                               max_cloud_fraction=max_cloud_fraction,
+                               bands=bands)
     if img_arr is None:
-        return None, None
+        return (job_details, None, None)
     # rasterise the label data
     lbl_arr = create_label_array(ctx=dltile, label_data=label_data, 
                                  attrib_to_burn=label_attrib,
@@ -205,5 +279,5 @@ def create_chips_for_tile(job_details: TileJobConfig) -> tuple:
     lbl_ds.GetRasterBand(1).WriteArray(lbl_arr)
     lbl_ds=None
     # return the paths
-    return (img_file,lbl_file)
+    return (job_details, img_file,lbl_file)
 
