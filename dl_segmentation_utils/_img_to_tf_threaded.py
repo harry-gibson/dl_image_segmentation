@@ -11,7 +11,7 @@ import os
 import sys
 import numpy as np
 
-from tf_example_creation import convert_to_example
+from ._tfrecord_image_translation import convert_to_example
 
 class ImageCoder(object):
     """Helper class that provides TensorFlow image coding utilities."""
@@ -327,15 +327,19 @@ def process_dataset_multithreaded(name, directory, out_directory, num_shards, nu
     Args:
       name: string, unique identifier specifying the data set, used to name the output files.
       directory: string, root path to the data set. Must have subfolders 'images' and 'labels'
-      out_directory: folder where the tfrecords will be saved
+        out_directory: folder where the tfrecords will be saved
       num_shards: integer number of shards (split tfrecords files) for this data set. Must be 
-      a multiple of num_threads.
+        a multiple of num_threads.
       num_threads: number of threads to use for parallel processing
       dltile_from_filename: The TFRecord examples will have an "identifier" feature which contains 
-      the source image filename. If this is True then '#' character in filename will be replaced 
-      by ':' in the identifier.
-      convert_png_to_jpg: Should PNG images be transcoded to JPG? Has no effect if store_as_array==True
-      store_as_array: If False then binary encoded PNG/JPG data will be stored in the TFRecords, giving smaller files. If True then the images will be decoded and the data arrays will be stored.
+        the source image filename. If this is True then '#' character in filename will be replaced 
+        by ':' in the identifier. If False then the image filename will be used directly. NB unlike 
+        in img_to_tf_mp, the geotransform / crs are not used in the identifier.
+      convert_png_to_jpg: Should PNG images be transcoded to JPG? Has no effect if 
+        store_as_array==True
+      store_as_array: If False then binary encoded PNG/JPG data will be stored in the TFRecords, 
+        giving smaller files. If True then the images will be decoded and the data arrays will 
+        be stored.
     """
     if not num_threads:
         num_threads=num_shards

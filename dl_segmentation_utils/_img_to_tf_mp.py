@@ -16,11 +16,25 @@ import rasterio
 from rasterio.plot import reshape_as_raster, reshape_as_image
 from rasterio.io import MemoryFile
 
-from tf_example_creation import convert_to_example
+from ._tfrecord_image_translation import convert_to_example
 
        
 def load_image_rasterio(img_path, parse_dltile_filename=True, decode=True):
-    """Process a single image file, for any GDAL-compatible image type"""
+    """Process a single image file, for any GDAL-compatible image type
+    
+    Parameters:
+    img_path: the path to the GDAL-compatible raster image
+    parse_dltile_filename: if True then the image filename will be assumed to be a DLTile key 
+        with ':' replaced by '#'. This DLTile key will be returned as tile_key. If False then 
+        tile_key will consist of '|'.join([filename, str(image_geotransform), str(img_crs)])
+    decode: if True then the image data will be read and returned as an array. If False then the 
+        raw file bytes will be returned.
+
+    
+    Returns: 
+    5-tuple of (image_data, height, width, bands, tile_key)
+    Where image_data and tile_key depend on chosen parameters as above.
+    """
     # we use rasterio to parse the actual image data into an array
     # so that we can handle multi bands, different filetypes, dtypes
     # But we still use tf api to handle the actual file reading as it is
@@ -37,13 +51,12 @@ def load_image_rasterio(img_path, parse_dltile_filename=True, decode=True):
                 height = src.height
                 width = src.width
                 bands = src.count
-
+    # as opposed to:
     #with rasterio.open(img_path) as src:
     #    img_arr = src.read() # reads all bands to 3d array bands,rows,cols
     #    gt_str = str(src.get_transform())
     #    crs_str = str(src.read_crs())
 
-    
     if parse_dltile_filename:
         tile_key = '.'.join(os.path.basename(img_path).split(os.extsep)[:-1]).replace('#',':')
     else:
@@ -231,18 +244,27 @@ def process_dataset_mp(name, directory, out_directory,
       directory: string, root path to the data set. Must have subfolders 'images' and 'labels'
       out_directory: folder where the tfrecords will be saved
       num_shards: integer number of shards (split tfrecords files) for this data set. Must be 
-      a multiple of num_proc.
+        a multiple of num_proc.
       num_proc: number of proc to use for parallel processing. Generally ok to use at least 1
-      per core.
+        per core.
       dltile_from_filename: Defines how the georeferencing information should be stored in the record. 
       
-      The TFRecord examples will have an "identifier" feature which will be needed to match the record back to the source image, and so recover the georeferencing information for the data if it's stored as arrays.
-      If this argument is True then the filename is assumed to be a DLTile key, with ':' replaced by '#', so the identifier will be set to the filename with '#' replaced ':' in the identifier. 
-      If this is False, then the identifier will be set to the '{IMG_FILENAME}|{IMG_GEOTRANSFORM}|{IMG_CRS}'.
+        The TFRecord examples will have an "identifier" feature which will be needed to match the record 
+        back to the source image, and so recover the georeferencing information for the data if it's stored 
+        as arrays.
+        
+        If this argument is True then the filename is assumed to be a DLTile key, with ':' replaced by '#', 
+        so the identifier will be set to the filename with '#' replaced ':' in the identifier. 
+        
+        If this is False, then the identifier will be set to 
+            '{IMG_FILENAME}|{IMG_GEOTRANSFORM}|{IMG_CRS}'
       file_ext: The extension of the image files to search for in the directory. (Labels and images 
-      must be in same format).
-      store_as_array: If False then binary encoded image data will be stored in the TFRecords, which in the case of a compressed image format will give smaller files. However the images will then need 
-      to be decoded in the training pipeline which may be slower. If True then the images will be decoded and the data arrays will be stored, either as UInt8 or Float64 types.
+        must be in same format).
+      store_as_array: If False then binary encoded image data will be stored in the TFRecords, 
+        which in the case of a compressed image format will give smaller files. However the images 
+        will then need to be decoded in the training pipeline which may be slower. 
+        If True then the images will be decoded and the data arrays will be stored, either as UInt8 
+        or Float64 types.
     """
     if not num_proc:
         num_proc = num_shards
