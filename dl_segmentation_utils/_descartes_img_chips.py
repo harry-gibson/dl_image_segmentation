@@ -18,7 +18,8 @@ class DLTileJobConfig:
     chips in parallel, including in particular the dltile object which is not directly pickleable."""
     def __init__(self, dltile, out_folder_base, dl_product, ref_date, labels_data,
                  min_date = None, max_date = None, max_cloud_fraction=None,
-                 label_attr=None, label_lyr_num=0, bands="red green blue"):
+                 label_attr=None, label_lyr_num=0, bands="red green blue", 
+                 label_nodata_value=255):
         self.DLTILE = dltile
         self.OUTFOLDER = out_folder_base
         self.PRODUCT=dl_product
@@ -30,9 +31,12 @@ class DLTileJobConfig:
         self.LABEL_BURN_ATTR=label_attr
         self.LABEL_LYR_NUM=label_lyr_num
         self.BANDS=bands
+        self.LABEL_NODATA_VALUE=label_nodata_value
         
     @classmethod
-    def from_run_config(cls, run_config, dltile, out_folder_base, ref_date, min_date, max_date, max_cloud_fraction):
+    def from_run_config(cls, run_config, dltile, out_folder_base, 
+                        ref_date, min_date=None, max_date=None, 
+                        max_cloud_fraction=None):
         """factory method to create a TileJobConfig where most of the parameters are replaced by a SampleCreationConfig 
         object"""
         lbl_data = run_config.LABEL_DATA()
@@ -43,7 +47,8 @@ class DLTileJobConfig:
                   labels_data=lbl_data.OGR_DATASET,
                   label_attr=lbl_data.BURN_ATTRIB,
                   label_lyr_num=lbl_data.get_layer_index(),
-                  bands=run_config.BANDS())
+                  bands=run_config.BANDS(),
+                  label_nodata_value=run_config.GET_LABEL_NODATA_VALUE())
 
 
 
@@ -106,7 +111,8 @@ class  DLSampleCreationConfig:
                   dl_product, bands, 
                  sample_folder_root, source_tag,
                  label_data_config,
-                max_cloud_fraction=None):
+                max_cloud_fraction=None,
+                label_nodata_value=255):
         """Params:
         tile_size: The size of the (square) tiles in pixels, INCLUDING padding.
             i.e. each tile will have tile_size - (2*tile_padding) pixels that are 
@@ -140,6 +146,7 @@ class  DLSampleCreationConfig:
         self._PRODUCT = dl_product
         self._BANDS = bands
         self._MAX_CLOUD_FRACTION = max_cloud_fraction
+        self._LABEL_NDV = label_nodata_value
         # expensive-to-create things that we'll cache
         self._dl_tiles = None
         self._dl_tile_ids = None
@@ -179,6 +186,14 @@ class  DLSampleCreationConfig:
     def SET_MAX_CLOUD_FRACTION(self, new_cf):
         self._MAX_CLOUD_FRACTION = new_cf
         
+        
+    def GET_LABEL_NODATA_VALUE(self):
+        return self._LABEL_NDV
+    
+    
+    def SET_LABEL_NODATA_VALUE(self, value):
+        self._LABEL_NDV=value
+    
     
     def _invalidate_tiles(self):
         self._dl_tiles = None
@@ -397,22 +412,60 @@ def create_img_array_for_tile(ctx, product, reference_date, min_date=None, max_d
 
 
 
-def create_label_array_for_tile(ctx, label_data, attrib_to_burn=None, layer_idx=0):
+def create_label_array_for_tile(ctx, label_data, attrib_to_burn=None, layer_idx=0, background_value=255):
     """Rasterises the label data (path to OGR datasource) within the specified geocontext.
-    If attrib_to_burn is not specified then all features will be rasterised as 1 and other 
-    areas as 0. If attrib_to_burn is specified then it must contain values 0-255. Returns a
-    2D array with shape equal to geocontext's shape + 2*padding"""
+    
+    Parameters
+    ----------
+    ctx: DLTile (or dict)
+        Geocontext as returned by dl.scenes.search(...). For example a DLTile object
+    label_data: string
+        Path to an OGR dataset (not layer) e.g. a file geodatabase folder, or a shapefile 
+        or GeoJSON file
+    attrib_to_burn: string
+        Name of an attribute on the features giving the value that intersecting pixels should have.
+        Must contain values in range 0 <= value <= 255. 
+        If None, then all polygons will be burnt with value 1 and all other areas as nodata_value.
+    layer_idx: int
+        Index of the OGR layer within the OGR dataset. For shapefiles, GeoJSON, etc, these datasets 
+        contain a single layer so this should be left at the default 0. For datasets that can contain 
+        multiple layers (e.g. file geodatabase) this specifies which layer to use.
+    background_value:
+        What value should be given to any pixels that fall within the tile (ctx) but are not covered by 
+        any polygon? 
+        
+        In a binary classification scheme (e.g. of-interest and non-interest polygons with
+        values 1 and 0) you may wish to assume that areas not covered by any polygon  
+        are the same as non-interest polygons (in which case provide 0 in this scenario), or you may wish 
+        to record a separate "don't know" value, in which case provide something suitable such as the 
+        default 255.
+    
+    Returns
+    -------
+    arr: ndarray
+        A 2D uint8 array containing the burned pixel values with shape equal to geocontext's 
+        shape + 2*padding
+    """
     drv = gdal.GetDriverByName('MEM')
     img_size = ctx.tilesize + ctx.pad*2
     mem_ds = drv.Create('tmp', img_size, img_size, 1, gdal.GDT_Byte)
     mem_ds.SetProjection(ctx.wkt)
     mem_ds.SetGeoTransform(ctx.geotrans)
+    _ = np.full([256,256], background_value, np.uint8)
+    mem_ds.GetRasterBand(1).WriteArray(_)
     label_ogr_ds = ogr.Open(label_data)
     label_lyr = label_ogr_ds.GetLayerByIndex(layer_idx)
+    # NB ALL_TOUCHED means all pixels intersecting a polygon at all are selected. This is as opposed to 
+    # only pixels whose centre point falls within the polygon. The potential difficulty with setting this 
+    # is that pixels on the boundary between two polygons will be selected by both, and thus will end up 
+    # with the value of whichever polygon the OGR reader happens to emit last. So long as our pixels are 
+    # small relative to the polygon sizes, we don't really need to worry, but if this wasn't the case it may 
+    # be better not to set ALL_TOUCHED=TRUE.
     if attrib_to_burn:
         gdal.RasterizeLayer(mem_ds, [1], label_lyr, options=['ALL_TOUCHED=TRUE',f'ATTRIBUTE={attrib_to_burn}'])
     else:
         gdal.RasterizeLayer(mem_ds, [1], label_lyr, burn_values=[1], options=['ALL_TOUCHED=TRUE'])
+    
     arr = mem_ds.ReadAsArray()
     mem_ds = None
     return arr
@@ -440,6 +493,7 @@ def create_chips_for_tile(job_details: DLTileJobConfig) -> tuple:
     label_data = job_details.LABEL_DS
     label_lyr = job_details.LABEL_LYR_NUM
     label_attrib = job_details.LABEL_BURN_ATTR
+    label_ndv = job_details.LABEL_NODATA_VALUE
     bands = job_details.BANDS
     
     min_date = job_details.MIN_DATE
@@ -472,7 +526,7 @@ def create_chips_for_tile(job_details: DLTileJobConfig) -> tuple:
     # rasterise the label data
     lbl_arr = create_label_array_for_tile(ctx=dltile, label_data=label_data, 
                                  attrib_to_burn=label_attrib,
-                                layer_idx=label_lyr)
+                                layer_idx=label_lyr, background_value=label_ndv)
     img_file = os.path.join(out_img_folder, fn) + ".tif"
     lbl_file = os.path.join(out_lbl_folder, fn) + ".tif"
     # save the data to compressed geotiffs
@@ -488,8 +542,12 @@ def create_chips_for_tile(job_details: DLTileJobConfig) -> tuple:
     lbl_ds = _gdal_dataset_from_geocontext(ctx=dltile, n_bands=1, driver_name="GTiff", 
                                           savename=lbl_file, dtype=lbl_arr.dtype, 
                                           options=['COMPRESS=LZW', 'TILED=TRUE', 'NUM_THREADS=4'])
-    lbl_ds.GetRasterBand(1).WriteArray(lbl_arr)
-    lbl_ds=None
+    lbl_band = lbl_ds.GetRasterBand(1)
+    if label_ndv is not None:
+        lbl_band.SetNoDataValue(label_ndv)
+    lbl_band.WriteArray(lbl_arr)
+    lbl_band = None
+    lbl_ds = None
     # return the paths
     return (job_details, img_file,lbl_file)
 
