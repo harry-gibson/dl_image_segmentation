@@ -336,7 +336,9 @@ def parse_encoded_gdal_proto_wrapped(example_proto):
     can be run in a pipeline, but pre-defines the array return type as float32.
     
     See also parse_encoded_gdal_example_eager which is not wrapped and so can only be 
-    run in eager mode but allows different return types"""
+    run in eager mode but allows different return types
+    
+    Returns 3-tuple of (img_array, label_array, identifier (DLTile key etc))"""
     # use the same function for reading as for rgb encoded images, in order to 
     # benefit from speed of tf.io.gfile
     (img_bytes, im_rec_shp, target_bytes, tgt_rec_shp, identifier) = _parse_byteslist_proto(example_proto)
@@ -385,8 +387,10 @@ def parse_encoded_gdal_proto_eager(example_proto):
 
     
 def parse_higher_dtype_array_proto(example_proto):
-    ''' parses an example protobuf in which image/image_data and target/target_data 
-    are numpy arrays, stored as floatlists'''
+    """Parses an example protobuf in which image/image_data and target/target_data 
+    are numpy arrays, stored as floatlists
+    
+    Returns 3-tuple of (img_array, label_array, identifier (DLTile key etc))"""
     image_features = tf.io.parse_single_example(example_proto, featuretemplate_ndarray_imagechip)
     
     img_height = tf.cast(image_features['image/height'], tf.int32)

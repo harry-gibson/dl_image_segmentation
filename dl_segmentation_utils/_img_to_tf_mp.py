@@ -237,7 +237,7 @@ def process_dataset_mp(name, directory, out_directory,
                       store_as_array=True):
     """Process a folder of images and label images and save it as TFRecords. Processes any 
     GDAL-compatible image format. 
-    (See also Use process_dataset_threaded for a faster implementation compatible with RGB 
+    (See also process_dataset_mt for a slightly faster implementation compatible with RGB 
     or single-band images only, in PNG or JPG format.)
     Args:
       name: string, unique identifier specifying the data set, used to name the output files.

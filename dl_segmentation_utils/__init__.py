@@ -9,4 +9,4 @@ from ._img_to_tf_threaded import process_dataset_multithreaded as images_to_tfre
 # utils for parsing TFRecords in modelling pipeline
 from ._tfrecord_image_translation import (featuretemplate_bytestring_imagechip, featuretemplate_ndarray_imagechip, 
 parse_encoded_rgb_img_proto, parse_8bit_array_proto, parse_encoded_gdal_proto_eager, 
-parse_encoded_gdal_proto_wrapped, parse_higher_dtype_array_proto)
+parse_encoded_gdal_proto_wrapped, parse_higher_dtype_array_proto, convert_to_example)
