@@ -6,7 +6,7 @@ import numpy as np
 from typing import Sequence
 
 __all__ = ['DLTileJobConfig', 'OGRLabelDataDesc', 'DLSampleCreationConfig', 
-'create_chips_for_tile',  'create_img_array_for_tile', 'create_label_array_for_tile']
+'create_chips_for_tile',  'create_img_array_for_tile', 'create_label_array_for_tile', 'create_cloudmasked_s2_array', 'stack_products_for_tile']
 
 class DLTileJobConfig:
     """Data class to hold the necessary info for creating one training sample, being one exported 
@@ -353,6 +353,55 @@ def _get_scene_date_diff_mapper(reference_date):
     return get_date_diff
 
 
+def stack_products_for_tile(ctx, products, bands_per_product, resampler='near'):
+    """Creates a mosaic of scenes for each of multiple products and stacks them all into a single output.
+    
+    Parameters
+    ----------
+    
+    ctx: DLTile (or dict)
+        Geocontext as returned by dl.scenes.search(...). For example a DLTile object
+    products: [string]
+        List of product names from the DL catalogue
+    bands_per_product: [string]
+        List of space-delimited strings of bands. Must be of the same length as products, the 
+        string at position n giving the bandnames to extract from product n in the format 
+        "red green blue"
+    resampler: 
+        How each product should be resampled to match the resolution specified in the ctx
+        Options include 'near' and 'cubic', see DL scenecollection.mosaic docs
+    
+    
+    Returns
+    ------- 
+    This function creates a straightforward scenewise overlay mosaic from each product in turn, 
+    it does not currently provide for filtering the scenecollection first. As such it's intended 
+    for combining model output predictions from different sources, which each consist of a 
+    single coverage, rather than combining richer products such as Sentinel-2 and Pleiades-VHR.
+    
+    """
+    
+    # TODO: use the scenecollection.stack method to mosaic rather than scenecollection.mosaic 
+    # and thus allow median (or mean) mosaic rather than first. Then make reference_date an optional 
+    # parameter, return closest-in-time pixel if it's not None as currently, and return median of 
+    # all matching pixels otherwise. See the S2-specific create_cloudmasked_s2_array function.
+    searchparams = {
+        "aoi" : ctx,
+    }
+    
+    all_arrays = []
+    for i, product in enumerate(products):
+        searchparams["products"] = product
+        product_bands = bands_per_product[i]
+        these_scenes, this_ctx  = dl.scenes.search(**searchparams)
+        this_arr = these_scenes.mosaic(bands=product_bands, ctx=ctx, bands_axis=-1, processing_level="surface")
+        all_arrays.append(this_arr)
+    
+    stacked_arr = np.dstack(all_arrays)
+    
+    return stacked_arr
+
+
 def create_cloudmasked_s2_array(ctx, min_date=None, max_date=None,
                                 bands="red green blue"):
     """Create a cloudfree mosaic of Sentinel-2 scenes matching the specified geocontext (dltile).
@@ -528,6 +577,24 @@ def create_label_array_for_tile(ctx, label_data, attrib_to_burn=None, layer_idx=
 def create_chips_for_tile(job_details: DLTileJobConfig) -> tuple:
     """Creates image chips (geotiff training samples) for the specified  TileJobConfig.
     
+    Parameters
+    ----------
+    job_details: DLTileJobConfig containing the necessary parameters to retrieve an image from 
+     Descartes Labs, create a rasterised label image, and save the result to GeoTiff files.
+    
+    The image will be extracted from DL using one of three functions depending on the details 
+    specified in the DLTileJobConfig:
+     * If job_details.PRODUCT is a list then this is taken as a list of products. A simple 
+     mosaic is made for the tile from each of the products (using the specified bands) and the 
+     bands of each product are stacked into a single output array. This is useful for retrieving 
+     model output predictions from multiple model runs e.g. VHR and LHR into a common resolution and 
+     tile format, for use as further model input.
+     * If job_details.PRODUCT is the DL Sentinel-2 product and job_details.MAX_CLOUD_FRACTION==0
+     then a cloud-free composite is created from the Sentinel-2 imagery using the DL cloud mask 
+     product
+     * Otherwise the specified product is extracted, after filtering to exclude scenes above the 
+     specified overall cloud fraction.
+     
     The image and label data files will be placed into /images and /labels subfolders below 
     the specified output folder location, and their name will be the DLTile's key with ':' 
     replaced by '#'.
@@ -570,8 +637,11 @@ def create_chips_for_tile(job_details: DLTileJobConfig) -> tuple:
     #dltile = dl.scenes.DLTile.from_key(dltile_key)
     
     # get the image data from descartes labs
-    
-    if max_cloud_fraction == 0 and product == "sentinel-2:L1C":
+    if isinstance(product, list):
+        assert isinstance(bands, list)
+        img_arr = stack_products_for_tile(ctx=dltile, products=product, bands_per_product=bands)
+        
+    elif max_cloud_fraction == 0 and product == "sentinel-2:L1C":
         # Sentinel 2 data with no max-cloud-fraction specified, use the pixelwise cloudfree median
         # composite method. NB reference date will be ignored
         img_arr = create_cloudmasked_s2_array(ctx=dltile, min_date=min_date, max_date=max_date, bands=bands)
