@@ -1,6 +1,6 @@
 # utils for getting image chips from the Descartes Labs API to cover AOI
 from ._descartes_img_chips import (DLTileJobConfig, OGRLabelDataDesc, DLSampleCreationConfig, 
-create_chips_for_tile,  create_img_array_for_tile, create_label_array_for_tile)
+create_chips_for_tile,  create_img_array_for_tile, create_label_array_for_tile, create_cloudmasked_s2_array)
 
 # utils for translating image chips to TFRecords
 from ._img_to_tf_mp import process_dataset_mp as images_to_tfrecords_mp

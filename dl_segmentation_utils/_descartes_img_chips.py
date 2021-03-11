@@ -353,6 +353,55 @@ def _get_scene_date_diff_mapper(reference_date):
     return get_date_diff
 
 
+def create_cloudmasked_s2_array(ctx, min_date=None, max_date=None,
+                                bands="red green blue"):
+    """Create a cloudfree mosaic of Sentinel-2 scenes matching the specified geocontext (dltile).
+    
+    The mosaic will be created by selecting all scenes intersecting the file; filtering to those after 
+    min_date and/or before max_date if specified; applying the cloud mask from the separate 
+    Descartes Labs S2 cloud mask product on a pixel-wise basis, and then returning the median of the 
+    unmasked values at each pixel.
+    
+    If an error occurs then None will be returned. This generally suggests an error emanating 
+    from the Descartes Labs API. This can suggest that no data are available for the specified 
+    product / date range / cloud specification. However it can also occur randomly. So it's 
+    always worth re-trying a few times, and or checking any error tiles in the DL Viewer to see 
+    if data really are unavailable.
+    
+    See also create_img_array_for_tile which filters scenes by overall cloud fraction (if known) 
+    but does not mask for remaining cloud within selected scenes.
+    """
+    # https://gis.stackexchange.com/a/367013
+    s2_product = "sentinel-2:L1C"
+    s2_cloud_product = "sentinel-2:L1C:dlcloud:v1"
+    
+    searchparams = {
+        "aoi" : ctx,
+        "products" : s2_product #product
+    }
+    if  min_date is not None:
+        searchparams['start_datetime'] = min_date.isoformat()
+    if max_date is not None:
+        searchparams['end_datetime'] = max_date.isoformat()
+    #scenes, newctx = dl.scenes.search(ctx, products=product)
+    s2_scenes, s2_ctx = dl.scenes.search(**searchparams)
+      
+    if len(s2_scenes) == 0:
+        return None
+    
+    s2_bands_stack = s2_scenes.stack(bands, s2_ctx, processing_level='surface', bands_axis=-1)
+    
+    searchparams["products"] = s2_cloud_product
+    cloud_scenes, _ = dl.scenes.search(**searchparams)
+    valid_cloudfree_mask_stack = cloud_scenes.stack('valid_cloudfree', s2_ctx, data_type='Byte', bands_axis=-1)
+    n_bands = s2_bands_stack.shape[-1]
+    valid_cloudfree_mask_stack = np.repeat(valid_cloudfree_mask_stack, repeats=n_bands, axis=-1)
+    
+    cloudfree_data_stack = np.ma.masked_where(valid_cloudfree_mask_stack==0, s2_bands_stack)
+    
+    cloudfree_mosaic = np.ma.median(cloudfree_data_stack, axis=0)
+    return cloudfree_mosaic
+
 
 def create_img_array_for_tile(ctx, product, reference_date, min_date=None, max_date=None, 
                      bands='red green blue', max_cloud_fraction=None):
@@ -366,8 +415,8 @@ def create_img_array_for_tile(ctx, product, reference_date, min_date=None, max_d
     future date for `reference_date` and None for `min_date` and `max_date`.
     
     The RGB image data (or other bands as specified) are returned as a 3D array
-    whose shape will be equal to the geocontext's shape + 2*padding, * n bands. 
-    The data will be processed to "surface" (surface reflectance) where available. 
+    whose shape will be equal to the geocontext's shape + 2*padding, * n bands i.e. 
+    (height, width, bands).
     
     For datasets that support it, the "Surface Reflectance" processed data will be returned 
     (as opposed to e.g. TOA).
@@ -378,6 +427,10 @@ def create_img_array_for_tile(ctx, product, reference_date, min_date=None, max_d
     always worth re-trying a few times, and or checking any error tiles in the DL Viewer to see 
     if data really are unavailable."""
     
+    # TODO: use the scenecollection.stack method to mosaic rather than scenecollection.mosaic 
+    # and thus allow median (or mean) mosaic rather than first. Then make reference_date an optional 
+    # parameter, return closest-in-time pixel if it's not None as currently, and return median of 
+    # all matching pixels otherwise. See the S2-specific create_cloudmasked_s2_array function.
     searchparams = {
         "aoi" : ctx,
         "products" : product
@@ -451,7 +504,7 @@ def create_label_array_for_tile(ctx, label_data, attrib_to_burn=None, layer_idx=
     mem_ds = drv.Create('tmp', img_size, img_size, 1, gdal.GDT_Byte)
     mem_ds.SetProjection(ctx.wkt)
     mem_ds.SetGeoTransform(ctx.geotrans)
-    _ = np.full([256,256], background_value, np.uint8)
+    _ = np.full([img_size,img_size], background_value, np.uint8)
     mem_ds.GetRasterBand(1).WriteArray(_)
     label_ogr_ds = ogr.Open(label_data)
     label_lyr = label_ogr_ds.GetLayerByIndex(layer_idx)
@@ -517,10 +570,19 @@ def create_chips_for_tile(job_details: DLTileJobConfig) -> tuple:
     #dltile = dl.scenes.DLTile.from_key(dltile_key)
     
     # get the image data from descartes labs
-    img_arr = create_img_array_for_tile(ctx=dltile, product=product, 
-                               reference_date=target_date, min_date=min_date, max_date=max_date,
-                               max_cloud_fraction=max_cloud_fraction,
-                               bands=bands)
+    
+    if max_cloud_fraction == 0 and product == "sentinel-2:L1C":
+        # Sentinel 2 data with no max-cloud-fraction specified, use the pixelwise cloudfree median
+        # composite method. NB reference date will be ignored
+        img_arr = create_cloudmasked_s2_array(ctx=dltile, min_date=min_date, max_date=max_date, bands=bands)
+    else:
+        # Other data products or S2 data with max-cloud-fraction None or >0, use the scenewise-cloud-cover-only 
+        # filtering method
+        img_arr = create_img_array_for_tile(ctx=dltile, product=product, 
+                                   reference_date=target_date, min_date=min_date, max_date=max_date,
+                                   max_cloud_fraction=max_cloud_fraction,
+                                   bands=bands)
+        
     if img_arr is None:
         return (job_details, None, None)
     # rasterise the label data
