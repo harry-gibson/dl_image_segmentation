@@ -8,6 +8,7 @@ from typing import Sequence
 __all__ = ['DLTileJobConfig', 'OGRLabelDataDesc', 'DLSampleCreationConfig', 
 'create_chips_for_tile',  'create_img_array_for_tile', 'create_label_array_for_tile', 'create_cloudmasked_s2_array', 'stack_products_for_tile']
 
+
 class DLTileJobConfig:
     """Data class to hold the necessary info for creating one training sample, being one exported 
     image and one rasterised label data image corresponding to the extent and resolution of the 
@@ -16,10 +17,58 @@ class DLTileJobConfig:
     Primary purpose of this class is to provide a hashable means for passing all the data needed 
     to extract one sample, so it can be easily pickled and used by joblib etc for exporting image 
     chips in parallel, including in particular the dltile object which is not directly pickleable."""
+    
     def __init__(self, dltile, out_folder_base, dl_product, ref_date, labels_data,
                  min_date = None, max_date = None, max_cloud_fraction=None,
                  label_attr=None, label_lyr_num=0, bands="red green blue", 
                  label_nodata_value=255):
+        """ Create a new DLTileJobConfig encapsulating the info needed to create one image/label pair.
+        
+        In production, instances of this class will most likely be created 
+        via DLSampleCreationConfig.create_tile_job_configs() rather than directly
+        
+        Parameters
+        ----------
+        
+        dltile: DLTile
+            a Descartes Labs DLTile object, giving the extent / resolution / crs (geocontext) of the 
+            required output
+        out_folder_base: string
+            Path to the base folder for the extracted data chips. The imagery and label chips will be placed 
+            in /images and /labels subfolders
+        dl_product: string or [string]
+            If a single string, the Descartes Labs catalog ID of the product to extract. 
+            If a list, then a list of DL catalog IDs of products. In this case the output image will consist of the 
+            specified bands from each product all concatenated/stacked into a single image.
+        ref_date: date
+            Prioritise images closest to this date, in the date-sorting mosaic method (active when a single product 
+            is specified and (max_cloud_fraction != 0 or product != sentinel-2:L1C"))
+        labels_data: string
+            Path to an OGR dataset containing the vector ground truth dataset to rasterise to make the label chip
+        min_date: date
+            Do not use any images from earlier than this date in the mosaic
+        max_date: date
+            Do not use any images from later than this date in the mosaic
+        max_cloud_fraction: float 0..1
+            Do not use any images with greater than this fraction of cloud cover recorded, in the date-sorting mosaic method.
+            Use 0 in conjunction product=="sentinel-2:L1C" to activate cloud-masking mosaic mode
+            Use None to use all candidate images regardless of cloud cover
+        label_attr: string
+            Name of the integer field in the labels dataset containg the value that should be rasterised ("burned").
+            Use None to burn all features as 1
+        label_lyr_num: int
+            Index of the OGR layer to use within the dataset. 
+            Default = 0, for datasets with only one layer (e.g. shapefile, GeoJSON)
+            Retrieve this from OGRLabelDataDesc.get_layer_index()
+        bands: string or [string]
+            If a single string, then a space-separated list of the bands to extract from the (single) product, in the 
+            format they are given / used in the Descartes Labs catalog e.g. "red green blue"
+            If a list, then a list of strings in the same format, corresponding to one band list for every product 
+            specified in dl_product
+        label_nodata_value: int (0..255)
+            What value should the label tiles be given in any areas that are not covered by any label feature?
+        
+        """
         self.DLTILE = dltile
         self.OUTFOLDER = out_folder_base
         self.PRODUCT=dl_product
@@ -51,8 +100,11 @@ class DLTileJobConfig:
                   label_nodata_value=run_config.GET_LABEL_NODATA_VALUE())
 
 
-
 class OGRLabelDataDesc:
+    """Data class to hold the necessary info to point to an attribute in a layer in an OGR dataset
+    
+    Also proivides a method to get the index of the layer within the dataset, for dataset formats that 
+    can have multiple layers."""
     
     def __init__(self, ogr_dataset, ogr_layer_name_or_idx=0, attrib_to_burn=None):
         """Params:
@@ -91,9 +143,8 @@ class OGRLabelDataDesc:
         #label_lyr = label_ogr_ds.GetLayerByIndex(label_lyr_idx)
 
 
-
 class  DLSampleCreationConfig:
-    """Holds the parameters needed for the overall configuration of  an extraction of image 
+    """Holds the parameters needed for the overall configuration of an extraction of image 
     chips and accompanying label data chips from the Descartes Labs (DL) API 
     
     Image chip locations, extent, and naming are based on the DL tiling scheme. An 
@@ -103,7 +154,7 @@ class  DLSampleCreationConfig:
     
     The necessary DLTiles to cover this area will be calculated and then 
     these, along with the other necessary parameters such as product ID, bands, and 
-    output folder can be used to create TileJobConfig objects for each tile that 
+    output folder can be used to create DLTileJobConfig objects for each tile that 
     needs exporting using create_tile_job_configs().
     """
     
@@ -113,25 +164,47 @@ class  DLSampleCreationConfig:
                  label_data_config,
                 max_cloud_fraction=None,
                 label_nodata_value=255):
-        """Params:
-        tile_size: The size of the (square) tiles in pixels, INCLUDING padding.
+        """
+        Parameters
+        ----------
+        
+        tile_size: int
+            The size of the (square) tiles in pixels, INCLUDING padding.
             i.e. each tile will have tile_size - (2*tile_padding) pixels that are 
             unique to it and not shared with adjacent ones, in each dimension
-        tile_padding: The number of pixels of padding (overlap) between the tiles. 
-        tile_res_m: The pixel resolution in metres that images will be created at.
+        tile_padding: int
+            The number of pixels of padding (overlap) between the tiles. Must be less than 
+            0.5*tile_size, probably substantially less!
+        tile_res_m: float
+            The pixel resolution in metres that images will be created at.
             The spatial extent of each tile is thus tile_size * tile_res_m.
-        dl_product: The Descartes Labs product ID (search in catalog.descarteslabs.com)
-        bands: A space-separatd string giving the band names to export e.g. "red green blue" 
+        dl_product: string or [string]
+            The Descartes Labs product ID (search in catalog.descarteslabs.com)
+            Or a list of such product IDs, to extract multiple products into stacked images
+        bands: string or [string]
+            A space-separatd string giving the band names to export e.g. "red green blue" 
             Check the available names in the DL catalog
-        sample_folder_root: The folder below which to create a folder for this export session.
-        source_tag: A tag to identify this export in exported folder and file names 
+            Or a list of such strings, if dl_product is also a list
+        sample_folder_root: string
+            The folder below which to create a folder for this export session:
+                sample_folder_root/generated_name/images
+                sample_folder_root/generated_name/labels
+        source_tag: string
+            A tag to identify this export in exported folder and file names 
             E.g. "sentinel"
-        label_data_config: An OGRLabelDataDesc object which specifies the vector dataset 
+        label_data_config: OGRLabelDataDesc
+            An OGRLabelDataDesc object which specifies the vector dataset 
             to rasterise to make the labels data corresponding to the imagery data
-        max_cloud_fraction: A decimal value between 0 and 1 specifying the maximum allowable 
+        max_cloud_fraction: float (0..1)
+            A decimal value between 0 and 1 specifying the maximum allowable 
             cloud fraction in images selected for mosaicking - where supported (e.g. works 
-            with Sentinel-2 data but not with Pleiades). If None then no cloud filtering will 
-            be done.
+            with Sentinel-2 data but not with Pleiades). 
+            If None then no cloud filtering will be done.
+            If 0 and any product is sentinel-2:L1C, then data for that product will be 
+            pixelwise cloud-masked instead
+        label_nodata_value: int (0..255)
+            Value to use for the background in label tiles (any area not covered by any feature),
+            will be coded as nodata in the GeoTIFF metadata
         """
         # readonly items, if these change then we need to recalculate tiles so handle 
         # via getter/setter or totally readonly
