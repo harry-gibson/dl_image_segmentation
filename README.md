@@ -1,6 +1,6 @@
 # dl_image_segmentation
 
-Contains code for retrieving and preparing data for running image segmentation deep learning models.
+Contains code for retrieving and preparing data for running image segmentation deep learning models, with a focus on the Descartes Labs API.
 
 Repository consists of a python package [dl_segmentation_utils](./dl_segmentation_utils/), and three Jupyter notebooks  demonstrating use of the package functionality, as described below: 
 
@@ -18,7 +18,7 @@ The training data are created in the form of two parallel folders named `/images
 
 This format is equivalent to that created by the ArcGIS [Export Training Data For Deep Learning](https://pro.arcgis.com/en/pro-app/latest/tool-reference/image-analyst/export-training-data-for-deep-learning.htm) tool in the "Classified Tiles" format. Following the ESRI convention we refer to the files as "image chips".
 
-The images retrieved comprise a mosaic of available imagery, after optionally filtering by date range and cloud cover. At each pixel the output value is taken from the image that is closest in time to a specified reference date  (whilst also optionally falling between a min/max date and having cloud cover not greater than that specified). 
+The images retrieved comprise a mosaic of available imagery, after optionally filtering by date range and cloud cover. At each pixel the output value is selected by a choice of methods: either taken from the image that is closest in time to a specified reference date  (whilst also optionally falling between a min/max date and having cloud cover not greater than that specified); or a median of pixels remaining after cloud masking and optional date filtering.
 
 Image retrieval can be run in parallel on a single machine; speed varies based on the response time of the DL API and depends on the size of images and the size of the catalog. As a guide, retrieving VHR RGB data from the Airbus Pleiades dataset to 256x256 pixel tiles averages about 4 images per second when appropriately parallelised.
 
