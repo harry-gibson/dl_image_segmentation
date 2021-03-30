@@ -301,14 +301,14 @@ class  DLSampleCreationConfig:
         return f"{self._tag_with_cf()}_{tfrecord_type}_{loc}_{year}"        
         
     
-    def get_tiles(self):
+    def get_tiles(self, tile_ids=None):
         """Find DLTiles of the configured size/resolution that intersect the features in the 
         configured labels dataset. 
         
         Will be populated on first call or after updating tile size 
         details - this can take a minute or two."""
         if self._dl_tiles is None:
-            self._populate_DLTiles()
+            self._populate_DLTiles(tile_ids)
         return self._dl_tiles
     
     
@@ -355,7 +355,18 @@ class  DLSampleCreationConfig:
         return tile_export_jobs
         
         
-    def _populate_DLTiles(self):
+    def _populate_DLTiles(self, tile_ids=None):
+        
+        if tile_ids is not None:
+            # optionally allow passing a list of tile ids because for complicated geometry, finding the 
+            # tiles can be very expensive, so if we have saved out the list of tiles to a shapefile then it 
+            # will save time to just recreate them from those IDs on a subsequent run (even though from_key 
+            # is itself fairly slow)
+            unique_tile_ids = set(tile_ids)
+            unique_tiles = [dl.scenes.DLTile.from_key(k) for k in unique_tile_ids]
+            self._dl_tiles = unique_tiles
+            self._dl_tile_ids = unique_tile_ids
+            return
         
         gdf_wgs84 = self.get_labeldata_wgs84_df()
         
