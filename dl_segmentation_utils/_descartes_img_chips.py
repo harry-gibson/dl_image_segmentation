@@ -67,7 +67,9 @@ class DLTileJobConfig:
             specified in dl_product
         label_nodata_value: int (0..255)
             What value should the label tiles be given in any areas that are not covered by any label feature?
-        
+            The data may also contain polygon features which have this value in which case they will be treated 
+            in the same way as areas covered by no polygon, i.e. they will be shown as nodata in the label tiles 
+            and should be treated as "unknown" or masked in downstream modelling code
         """
         self.DLTILE = dltile
         self.OUTFOLDER = out_folder_base
