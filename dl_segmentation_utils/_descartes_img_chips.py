@@ -163,7 +163,8 @@ class  DLSampleCreationConfig:
     def __init__(self,  tile_size, tile_padding, tile_res_m, 
                   dl_product, bands, 
                  sample_folder_root, source_tag,
-                 label_data_config,
+                 label_data_config:OGRLabelDataDesc,
+                 label_coverage_config:OGRLabelDataDesc=None,
                 max_cloud_fraction=None,
                 label_nodata_value=255):
         """
@@ -197,6 +198,13 @@ class  DLSampleCreationConfig:
         label_data_config: OGRLabelDataDesc
             An OGRLabelDataDesc object which specifies the vector dataset 
             to rasterise to make the labels data corresponding to the imagery data
+        label_coverage_config: Optional, OGRLabelDataDesc
+            An optional second OGRLabelDataDesc which will be use to provide the features 
+            that should be covered by image chips. Features from this provider will not be 
+            rasterised, they will just be used to determine the locations in which 
+            label_data_config will be rasterised. Use this to create chips at desired point location 
+            only (e.g. for class balancing) or simply as a source of simpler polygons for faster 
+            determination of tile coverage (e.g. bounding boxes of the labels data)
         max_cloud_fraction: float (0..1)
             A decimal value between 0 and 1 specifying the maximum allowable 
             cloud fraction in images selected for mosaicking - where supported (e.g. works 
@@ -214,6 +222,7 @@ class  DLSampleCreationConfig:
         self._TILE_PAD = tile_padding
         self._TILE_RES = tile_res_m
         self._LABEL_DATA = label_data_config 
+        self._LABEL_COVERAGE = label_coverage_config
         # no sense in being alterable
         self._root = sample_folder_root
         self._tag = source_tag
@@ -226,6 +235,7 @@ class  DLSampleCreationConfig:
         self._dl_tiles = None
         self._dl_tile_ids = None
         self._gdf_wgs84 = None
+        self._gdf_coverage_wgs84 = None
 
         
     def TILE_SIZE_PAD_RES(self, size_pad_res=None):
@@ -245,7 +255,11 @@ class  DLSampleCreationConfig:
     def LABEL_DATA(self):
         return self._LABEL_DATA # readonly
     
-    
+
+    def LABEL_COVERAGE_DATA(self):
+        return self._LABEL_COVERAGE
+        
+
     def PRODUCT(self):
         return self._PRODUCT
     
@@ -336,7 +350,20 @@ class  DLSampleCreationConfig:
         self._gdf_wgs84 = gdf_labels.to_crs('EPSG:4326')
         return self._gdf_wgs84
         
-        
+
+    def get_label_coverage_wgs84_df(self):
+        if self._gdf_coverage_wgs84 is not None:
+            return self._gdf_coverage_wgs84
+        if self._LABEL_COVERAGE is None:
+            return None
+        gdf_labels = gpd.read_file(
+            self._LABEL_COVERAGE.OGR_DATASET,
+            layer = self._LABEL_COVERAGE.get_layer_index()
+        )
+        self._gdf_coverage_wgs84 = gdf_labels.to_crs('EPSG:4326')
+        return self._gdf_coverage_wgs84
+
+
     def create_tile_job_configs(self, loc_label, year_label, 
                                 ref_date, min_date=None, max_date=None):
         """Creates a list of DLTileJobConfigs, one for each tile required to cover the 
@@ -370,7 +397,10 @@ class  DLSampleCreationConfig:
             self._dl_tile_ids = unique_tile_ids
             return
         
-        gdf_wgs84 = self.get_labeldata_wgs84_df()
+        gdf_wgs84 = self.get_label_coverage_wgs84_df()
+        if gdf_wgs84 is None:
+            # i.e. no separate coverage requirement class provided, the normal situation
+            gdf_wgs84 = self.get_labeldata_wgs84_df()
         
         # We need to get all DLTiles of the specified size and resolution that intersect the extent polygons.
         # We'll dissolve them first, and split back by parts. This will reduce the complexity of the geometries 
